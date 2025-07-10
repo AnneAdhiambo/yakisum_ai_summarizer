@@ -1,28 +1,71 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Wifi, WifiOff, Copy, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import SWhandler from "smart-widget-handler"
 
 export function UserProfile() {
   const [isConnected, setIsConnected] = useState(true)
   const [copied, setCopied] = useState(false)
+  const [user, setUser] = useState<any | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  // Mock user data - in real app this would come from Nostr
-  const user = {
-    name: "yakihonne_user",
-    publicKey: "npub1xyz...abc123",
-    avatar: "/placeholder.svg?height=40&width=40",
-  }
+  useEffect(() => {
+    SWhandler.client.ready();
+    const listener = SWhandler.client.listen((event: any) => {
+      if (event.kind === "user-metadata") {
+        setUser(event.data?.user)
+        setLoading(false)
+      }
+      if (event.kind === "err-msg") {
+        setUser({
+          name: "Error",
+          display_name: "Error",
+          pubkey: "",
+          picture: "/placeholder.svg?height=40&width=40",
+        })
+        setLoading(false)
+      }
+    })
+    // Fallback timeout
+    const timer = setTimeout(() => {
+      setLoading(false)
+    }, 3000)
+    return () => {
+      listener?.close?.()
+      clearTimeout(timer)
+    }
+  }, [])
 
   const handleCopyPublicKey = async () => {
     try {
-      await navigator.clipboard.writeText(user.publicKey)
+      await navigator.clipboard.writeText(user?.pubkey || "")
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error("Failed to copy:", err)
     }
+  }
+
+  if (loading) {
+    return (
+      <div className="bg-white border-b border-gray-200 p-4">
+        <div className="flex items-center justify-between">
+          <span>Loading user profile...</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return (
+      <div className="bg-white border-b border-gray-200 p-4">
+        <div className="flex items-center justify-between">
+          <span>No user profile found.</span>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -31,8 +74,8 @@ export function UserProfile() {
         <div className="flex items-center gap-3">
           <div className="relative">
             <img
-              src={user.avatar || "/placeholder.svg"}
-              alt={user.name}
+              src={user?.picture || "/placeholder.svg"}
+              alt={user?.display_name || user?.name}
               className="w-10 h-10 sm:w-12 sm:h-12 rounded-full object-cover"
             />
             <div
@@ -42,10 +85,10 @@ export function UserProfile() {
             />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-medium text-gray-900 text-sm sm:text-base">{user.name}</p>
+            <p className="font-medium text-gray-900 text-sm sm:text-base">{user?.display_name || user?.name}</p>
             <div className="flex items-center gap-2">
               <p className="text-xs sm:text-sm text-gray-500 truncate max-w-[120px] sm:max-w-[180px]">
-                {user.publicKey}
+                {user?.pubkey}
               </p>
               <Button size="sm" variant="ghost" className="h-4 w-4 p-0" onClick={handleCopyPublicKey}>
                 {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3 text-gray-400" />}

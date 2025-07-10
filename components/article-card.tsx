@@ -1,16 +1,19 @@
 "use client"
 
-import { Clock, ExternalLink } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { ExternalLink } from "lucide-react"
+import Link from "next/link"
 
 interface Article {
   id: string
   title: string
   author: string
-  excerpt: string
+  authorName: string
+  timeAgo: string
   readTime: string
+  excerpt: string
   thumbnail: string
+  url: string
 }
 
 interface ArticleCardProps {
@@ -19,31 +22,30 @@ interface ArticleCardProps {
 
 export function ArticleCard({ article }: ArticleCardProps) {
   return (
-    <Card className="hover:shadow-md transition-shadow">
+    <Card className="hover:shadow-md transition-shadow cursor-pointer relative">
       <CardContent className="p-4">
-        <div className="flex gap-3">
+        <div className="flex gap-4 items-start">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-semibold text-sm text-gray-800 dark:text-gray-200">{article.authorName}</span>
+              <span className="text-xs text-gray-500">• {article.timeAgo}</span>
+              <span className="text-xs text-orange-500 ml-2">{article.readTime} read</span>
+            </div>
+            <h3 className="font-bold text-lg text-gray-900 dark:text-white mb-1 leading-tight">{article.title}</h3>
+            <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 line-clamp-2">{article.excerpt}</p>
+          </div>
           <img
             src={article.thumbnail || "/placeholder.svg"}
             alt={article.title}
-            className="w-20 h-16 object-cover rounded-lg flex-shrink-0"
+            className="w-24 h-24 object-cover rounded-lg flex-shrink-0 border"
           />
-          <div className="flex-1 min-w-0">
-            <h3 className="font-medium text-gray-900 line-clamp-2 mb-1">{article.title}</h3>
-            <p className="text-sm text-gray-600 line-clamp-2 mb-2">{article.excerpt}</p>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <span>{article.author}</span>
-                <span>•</span>
-                <div className="flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  <span>{article.readTime}</span>
-                </div>
-              </div>
-              <Button size="sm" variant="ghost" className="text-orange-500 hover:text-orange-600">
-                <ExternalLink className="h-3 w-3" />
-              </Button>
-            </div>
-          </div>
+        </div>
+        {/* External link icon at bottom right */}
+        <div className="absolute bottom-3 right-3">
+          <Link href={article.url} target="_blank" rel="noopener noreferrer">
+            <ExternalLink className="w-5 h-5 text-gray-400 hover:text-orange-500 transition-colors" />
+            <span className="sr-only">Open in Yakihonne</span>
+          </Link>
         </div>
       </CardContent>
     </Card>
