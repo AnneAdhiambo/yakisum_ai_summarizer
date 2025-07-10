@@ -22,6 +22,7 @@ interface Message {
     readTime: string
     thumbnail: string
   }>
+  debugContent?: string // Added for debugging
 }
 
 export function ChatInterface() {
@@ -81,38 +82,26 @@ export function ChatInterface() {
     setInput("")
     setIsLoading(true)
 
-    // Simulate AI response
-    setTimeout(() => {
+    try {
+      const res = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: input }),
+      })
+      const data = await res.json()
+
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: "ai",
-        content: `I found some relevant information about "${userMessage.content}". Here's what I discovered and some related content that might interest you.`,
+        content: data.body?.summary || "No summary returned.",
         timestamp: new Date(),
-        articles: [
-          {
-            id: "1",
-            title: "Understanding Nostr Protocol",
-            author: "Tech Writer",
-            excerpt:
-              "A comprehensive guide to the Nostr protocol and its implications for decentralized social media...",
-            readTime: "5 min read",
-            thumbnail: "/placeholder.svg?height=100&width=150",
-          },
-          {
-            id: "2",
-            title: "The Future of Decentralized Publishing",
-            author: "Crypto Analyst",
-            excerpt: "Exploring how decentralized protocols are reshaping content creation and distribution...",
-            readTime: "8 min read",
-            thumbnail: "/placeholder.svg?height=100&width=150",
-          },
-        ],
+        debugContent: data.body?.debugContent || "",
+        articles: data.body?.articles || [], // <-- ADD THIS LINE
       }
 
       const finalMessages = [...updatedMessagesWithUser, aiMessage]
       setMessages(finalMessages)
 
-      // Update history with complete conversation
       if (chatId) {
         addToHistory({
           id: chatId,
@@ -121,9 +110,19 @@ export function ChatInterface() {
           timestamp: new Date().toISOString(),
         })
       }
-
+    } catch (err) {
+      setMessages([
+        ...updatedMessagesWithUser,
+        {
+          id: (Date.now() + 1).toString(),
+          type: "ai",
+          content: "Sorry, there was an error summarizing your request.",
+          timestamp: new Date(),
+        },
+      ])
+    } finally {
       setIsLoading(false)
-    }, 1500)
+    }
   }
 
   const handleSaveChat = () => {
@@ -151,13 +150,64 @@ export function ChatInterface() {
           {messages.map((message) => (
             <div key={message.id}>
               <MessageBubble message={message} />
+              {message.debugContent && (
+                <pre className="text-xs text-gray-400 bg-gray-100 p-2 rounded mt-2">
+                  {message.debugContent}
+                </pre>
+              )}
               {message.articles && (
                 <div className="mt-4 space-y-3">
                   <p className="text-sm font-medium text-gray-700">Related Articles:</p>
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                    {message.articles.map((article) => (
-                      <ArticleCard key={article.id} article={article} />
-                    ))}
+                    {message.articles.map((article) => {
+                      // Patch for legacy shape: fill missing fields for ArticleCard
+                      const patched = {
+                        ...article,
+                        authorName: article.author?.substring?.(0, 8) || "Unknown",
+                        timeAgo: "recently",
+                        url: (article as any).url || "#",
+                        stats: (article as any).stats || { likes: 0, replies: 0, zaps: 0, reposts: 0 },
+                      };
+                      // Add click handler for summarization
+                      return (
+                        <div key={patched.id} onClick={async () => {
+                          // Prevent duplicate summaries for the same article
+                          if (messages.some(m => m.type === "ai" && m.content && m.content.includes(patched.title))) return;
+                          setIsLoading(true);
+                          try {
+                            const res = await fetch("/api/summarize", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ articleId: patched.id }),
+                            });
+                            const data = await res.json();
+                            setMessages(prev => ([
+                              ...prev,
+                              {
+                                id: (Date.now() + Math.random()).toString(),
+                                type: "ai",
+                                content: data.body?.summary || "No summary returned.",
+                                timestamp: new Date(),
+                              },
+                            ]));
+                          } catch (err) {
+                            setMessages(prev => ([
+                              ...prev,
+                              {
+                                id: (Date.now() + Math.random()).toString(),
+                                type: "ai",
+                                content: "Sorry, there was an error summarizing this article.",
+                                timestamp: new Date(),
+                              },
+                            ]));
+                          } finally {
+                            setIsLoading(false);
+                          }
+                        }} style={{ cursor: "pointer" }}>
+                          <ArticleCard article={patched} />
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
