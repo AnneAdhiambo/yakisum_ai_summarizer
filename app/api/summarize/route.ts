@@ -9,7 +9,8 @@ const GEMINI_API_URL = process.env.GEMINI_API_URL;
 async function geminiSummarize(text: string): Promise<string> {
   if (!GEMINI_API_KEY || !GEMINI_API_URL) {
     console.error("Missing environment variables:", { 
-   
+      GEMINI_API_KEY: !!GEMINI_API_KEY, 
+      GEMINI_API_URL: !!GEMINI_API_URL 
     });
     return "Error: Missing API configuration. Please check your environment variables.";
   }
@@ -66,6 +67,14 @@ function extractArticleInfo(event: any) {
 }
 
 export async function POST(req: NextRequest) {
+  // Debug environment variables for Vercel
+  console.log("Vercel Environment Check:", {
+    GEMINI_API_KEY: GEMINI_API_KEY ? "SET" : "NOT SET",
+    GEMINI_API_URL: GEMINI_API_URL ? "SET" : "NOT SET",
+    NODE_ENV: process.env.NODE_ENV,
+    VERCEL_ENV: process.env.VERCEL_ENV
+  });
+  
   const body = await req.json();
   const { query, articleId, url } = body;
 
