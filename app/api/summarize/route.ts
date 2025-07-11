@@ -1,23 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSubData } from "@/lib/helpers";
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY 
-const GEMINI_API_URL = process.env.GEMINI_API_URL || "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_URL = process.env.GEMINI_API_URL;
+
+
 
 async function geminiSummarize(text: string): Promise<string> {
+  if (!GEMINI_API_KEY || !GEMINI_API_URL) {
+    console.error("Missing environment variables:", { 
+   
+    });
+    return "Error: Missing API configuration. Please check your environment variables.";
+  }
+  
   const prompt = `Summarize the following content in 3-5 sentences.\n\n${text}`;
-  const res = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
+  console.log("Making request to Gemini:", { url: GEMINI_API_URL, hasKey: !!GEMINI_API_KEY });
+  const res = await fetch(GEMINI_API_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-goog-api-key": GEMINI_API_KEY,
+    },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
     }),
   });
+
+  // console log; res
+  console.log("Gemini response status:", res.status, res.statusText);
+  console.log("Gemini response headers:", Object.fromEntries(res.headers.entries()));
+  
   if (res.ok) {
     const data = await res.json();
+    console.log("Gemini response data:", data);
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  } else {
+    const errorText = await res.text();
+    console.log("Gemini error response:", errorText);
+    return "Could not generate summary.";
   }
-  return "Could not generate summary.";
 }
 
 function extractArticleInfo(event: any) {
@@ -131,6 +153,11 @@ export async function POST(req: NextRequest) {
       summary: "Please provide a query or an article to summarize.",
       articles: [],
       debugRequest: body,
+      debugEnv: {
+        GEMINI_API_KEY: GEMINI_API_KEY ? "SET" : "NOT SET",
+        GEMINI_API_URL: GEMINI_API_URL ? "SET" : "NOT SET",
+        NODE_ENV: process.env.NODE_ENV
+      }
     },
   }, { status: 400 });
 } 
