@@ -44,15 +44,13 @@ async function geminiSummarize(text: string): Promise<string> {
 }
 
 function extractArticleInfo(event: any) {
-  const content = event.content || "";
-  const lines = content.split('\n');
-  let title = lines.find((line: string) => line.trim().startsWith('#')) || lines[0] || "Untitled";
-  title = title.replace(/^#+\s*/, '').trim();
-  let description = lines.slice(1).join(' ').slice(0, 200);
-  if (!description) description = content.slice(0, 200);
+  // NIP-23: extract from tags
+  const title = event.tags?.find((tag: any) => tag[0] === 'title')?.[1] || "Untitled";
+  const summary = event.tags?.find((tag: any) => tag[0] === 'summary')?.[1] || "";
+  const image = event.tags?.find((tag: any) => tag[0] === 'image')?.[1] || "/placeholder.svg";
   const author = event.pubkey;
   const date = new Date((event.created_at || 0) * 1000).toISOString().split('T')[0];
-  const url = `https://yakihonne.com/notes/nevent1qq${event.id}`;
+  const url = `https://yakihonne.com/a/${event.id}`;
   return {
     id: event.id,
     title,
@@ -60,9 +58,10 @@ function extractArticleInfo(event: any) {
     authorName: author?.substring?.(0, 8) || "Unknown",
     timeAgo: date,
     readTime: "1 min",
-    excerpt: description,
-    thumbnail: "/placeholder.svg",
+    excerpt: summary || event.content.slice(0, 200),
+    thumbnail: image,
     url,
+    content: event.content,
   };
 }
 
@@ -91,10 +90,10 @@ export async function POST(req: NextRequest) {
         title = found.title || title;
       }
     }
-    // If not found, fetch from Nostr by ID
+    // If not found, fetch from Nostr by ID (kind 30023, historical)
     if (!found && articleId) {
-      const since = Math.floor(Date.now() / 1000) - 60 * 60 * 24 * 7;
-      const { data: events } = await getSubData([{ kinds: [1], since }], 1000);
+      // Fetch all historical articles (no since filter)
+      const { data: events } = await getSubData([{ kinds: [30023] }], 5000);
       const event = events.find((e: any) => e.id === articleId);
       if (event) {
         content = event.content;
@@ -123,6 +122,7 @@ export async function POST(req: NextRequest) {
       layout: "summary",
       body: {
         title: `Summary for ${title}`,
+        postId: articleId || url || null, // Add postId for faint display
         summary,
         debugContent: content,
         debugRequest: body,
@@ -133,12 +133,21 @@ export async function POST(req: NextRequest) {
 
   // 2. Search flow: return articles, no summaries
   if (query) {
-    const since = Math.floor(Date.now() / 1000) - 60 * 60 * 24 * 7;
-    const { data: events } = await getSubData([{ kinds: [1], since }], 1000);
+    // Fetch all historical articles (no since filter)
+    const { data: events } = await getSubData([{ kinds: [30023] }], 5000);
     let filtered = events;
     if (query) {
       const q = query.toLowerCase();
-      filtered = events.filter((e: any) => e.content.toLowerCase().includes(q));
+      filtered = events.filter((e: any) => {
+        // Search in title, summary, and content
+        const title = e.tags?.find((tag: any) => tag[0] === 'title')?.[1] || "";
+        const summary = e.tags?.find((tag: any) => tag[0] === 'summary')?.[1] || "";
+        return (
+          title.toLowerCase().includes(q) ||
+          summary.toLowerCase().includes(q) ||
+          (e.content || "").toLowerCase().includes(q)
+        );
+      });
     }
     const articles = filtered.slice(0, 5).map(extractArticleInfo);
     return NextResponse.json({
