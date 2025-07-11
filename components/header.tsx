@@ -2,6 +2,7 @@
 
 import { Menu } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { FaRobot } from "react-icons/fa";
 
 type ActiveSection = "ai-agent" | "saved" | "history"
 
@@ -11,7 +12,7 @@ interface HeaderProps {
 }
 
 const sectionTitles = {
-  "ai-agent": "Yakihonne AI Agent",
+  "ai-agent": "Yakisum",
   saved: "Saved Chats",
   history: "Chat History",
 }
@@ -25,7 +26,7 @@ export function Header({ onMenuClick, activeSection }: HeaderProps) {
         </Button>
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="w-8 h-8 sm:w-10 sm:h-10 bg-orange-500 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm sm:text-base">Y</span>
+            <FaRobot className="text-white w-5 h-5 sm:w-6 sm:h-6" />
           </div>
           <h1 className="font-semibold text-gray-900 text-sm sm:text-base lg:text-lg">
             {sectionTitles[activeSection]}

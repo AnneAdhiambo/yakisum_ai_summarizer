@@ -23,6 +23,7 @@ interface Message {
     thumbnail: string
   }>
   debugContent?: string // Added for debugging
+  title?: string // Added for AI messages
 }
 
 export function ChatInterface() {
@@ -31,13 +32,18 @@ export function ChatInterface() {
       id: "1",
       type: "ai",
       content:
-        "Hello! I'm your Yakihonne AI Agent. I can help you search through articles, provide summaries, and suggest related content. What would you like to explore today?",
+        "Hello! I'm your Yakihonne AI Agent. How can I assist you today?",
       timestamp: new Date(),
     },
   ])
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [currentChatId, setCurrentChatId] = useState<string | null>(null)
+  const [lastQuery, setLastQuery] = useState<string | null>(null)
+  const [lastOffset, setLastOffset] = useState<number>(0)
+  const [lastTotal, setLastTotal] = useState<number>(0)
+  const [lastArticles, setLastArticles] = useState<any[]>([])
+  const [lastLimit, setLastLimit] = useState<number>(5)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { addToHistory, saveChat, isChatSaved } = useChatHistory()
 
@@ -86,9 +92,15 @@ export function ChatInterface() {
       const res = await fetch("/api/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: input }),
+        body: JSON.stringify({ query: input, offset: 0, limit: lastLimit }),
       })
       const data = await res.json()
+
+      setLastQuery(input)
+      setLastOffset(data.body?.articles?.length || 0)
+      setLastTotal(data.body?.total || 0)
+      setLastArticles(data.body?.articles || [])
+      setLastLimit(data.body?.limit || 5)
 
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -96,7 +108,8 @@ export function ChatInterface() {
         content: data.body?.summary || "No summary returned.",
         timestamp: new Date(),
         debugContent: data.body?.debugContent || "",
-        articles: data.body?.articles || [], // <-- ADD THIS LINE
+        articles: data.body?.articles || [],
+        title: data.body?.title || undefined,
       }
 
       const finalMessages = [...updatedMessagesWithUser, aiMessage]
@@ -120,6 +133,49 @@ export function ChatInterface() {
           timestamp: new Date(),
         },
       ])
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Show more handler
+  const handleShowMore = async () => {
+    if (!lastQuery || isLoading) return
+    setIsLoading(true)
+    try {
+      const res = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: lastQuery, offset: lastOffset, limit: lastLimit }),
+      })
+      const data = await res.json()
+      const newArticles = data.body?.articles || [];
+      // Deduplicate by id
+      const allArticles = [...lastArticles, ...newArticles].filter((article, index, self) =>
+        index === self.findIndex(a => a.id === article.id)
+      );
+      setLastArticles(allArticles)
+      setLastOffset(allArticles.length)
+      setLastTotal(data.body?.total || allArticles.length)
+      setLastLimit(data.body?.limit || lastLimit)
+      // Update the last AI message with the new articles
+      setMessages((prev) => {
+        const updated = [...prev]
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].type === "ai" && updated[i].articles) {
+            updated[i] = {
+              ...updated[i],
+              articles: allArticles,
+              content: data.body?.summary || updated[i].content,
+              title: data.body?.title || updated[i].title,
+            }
+            break
+          }
+        }
+        return updated
+      })
+    } catch (err) {
+      // Optionally show error
     } finally {
       setIsLoading(false)
     }
@@ -157,7 +213,7 @@ export function ChatInterface() {
               )}
               {message.articles && (
                 <div className="mt-4 space-y-3">
-                  <p className="text-sm font-medium text-gray-700">Related Articles:</p>
+                  <p className="text-sm font-medium text-gray-700">Articles:</p>
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                     {message.articles.map((article) => {
                       // Patch for legacy shape: fill missing fields for ArticleCard
@@ -188,6 +244,8 @@ export function ChatInterface() {
                                 type: "ai",
                                 content: data.body?.summary || "No summary returned.",
                                 timestamp: new Date(),
+                                title: data.body?.title || undefined,
+                                postId: data.body?.postId || undefined,
                               },
                             ]));
                           } catch (err) {
@@ -209,6 +267,14 @@ export function ChatInterface() {
                       );
                     })}
                   </div>
+                  {/* Show more button */}
+                  {lastQuery && lastTotal > lastOffset && message.articles.length === lastArticles.length && (
+                    <div className="flex justify-center mt-4">
+                      <Button onClick={handleShowMore} disabled={isLoading} variant="outline">
+                        Show more
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
