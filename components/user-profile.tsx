@@ -15,6 +15,7 @@ export function UserProfile() {
     SWhandler.client.ready();
     const listener = SWhandler.client.listen((event: any) => {
       if (event.kind === "user-metadata") {
+        console.log("User profile event:", event.data?.user);
         setUser(event.data?.user)
         setLoading(false)
       }
@@ -74,7 +75,15 @@ export function UserProfile() {
         <div className="flex items-center gap-3">
           <div className="relative">
             <img
-              src={user?.picture || "/placeholder.svg"}
+              src={
+                user?.picture && user.picture.trim() !== ""
+                  ? user.picture
+                  : user?.pubkey
+                  ? `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(user.pubkey)}&colors=F4A261`
+                  : user?.name
+                  ? `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(user.name)}&colors=F4A261`
+                  : "/placeholder.svg"
+              }
               alt={user?.display_name || user?.name}
               className="w-10 h-10 sm:w-12 sm:h-12 rounded-full object-cover"
             />

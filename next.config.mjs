@@ -9,6 +9,10 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Vercel optimizations
+  experimental: {
+    serverComponentsExternalPackages: ['@nostr-dev-kit/ndk'],
+  },
 }
 
 export default nextConfig

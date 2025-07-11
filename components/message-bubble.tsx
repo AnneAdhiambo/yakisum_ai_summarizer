@@ -8,6 +8,7 @@ interface Message {
   type: "user" | "ai"
   content: string
   timestamp: Date | string
+  title?: string;
 }
 
 interface MessageBubbleProps {
@@ -34,6 +35,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           isUser ? "bg-orange-500 text-white" : "bg-white border border-gray-200",
         )}
       >
+        {/* Show title and postId for AI messages if present */}
+        {!isUser && message.title && (
+          <>
+            <p className="text-base font-semibold text-gray-900 mb-0.5">{message.title}</p>
+           
+          </>
+        )}
         <p className="text-sm">{message.content}</p>
         <p className={cn("text-xs mt-1", isUser ? "text-orange-100" : "text-gray-500")}>
           {date.toLocaleTimeString([], {
