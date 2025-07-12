@@ -44,19 +44,56 @@ async function geminiSummarize(text: string): Promise<string> {
 }
 
 function extractArticleInfo(event: any) {
+  // Debug: log the event structure to understand what we're working with
+  console.log("Processing event:", {
+    id: event.id,
+    kind: event.kind,
+    hasContent: !!event.content,
+    contentLength: event.content?.length || 0,
+    tags: event.tags?.length || 0,
+    pubkey: event.pubkey?.substring(0, 16) + "..."
+  });
+
   // NIP-23: extract from tags
-  const title = event.tags?.find((tag: any) => tag[0] === 'title')?.[1] || "Untitled";
+  const title = event.tags?.find((tag: any) => tag[0] === 'title')?.[1] || 
+                event.tags?.find((tag: any) => tag[0] === 'd')?.[1] || 
+                "Untitled";
+  
   const summary = event.tags?.find((tag: any) => tag[0] === 'summary')?.[1] || "";
-  const image = event.tags?.find((tag: any) => tag[0] === 'image')?.[1] || "/placeholder.svg";
+  const image = event.tags?.find((tag: any) => tag[0] === 'image')?.[1] || 
+                event.tags?.find((tag: any) => tag[0] === 'thumbnail')?.[1] || 
+                "/placeholder.svg";
+  
   const author = event.pubkey;
   const date = new Date((event.created_at || 0) * 1000).toISOString().split('T')[0];
   const url = `https://yakihonne.com/a/${event.id}`;
+  
   // Popularity metrics
   const likes = parseInt(event.tags?.find((tag: any) => tag[0] === 'likes')?.[1] || '0', 10);
   const reposts = parseInt(event.tags?.find((tag: any) => tag[0] === 'reposts')?.[1] || '0', 10);
   const zaps = parseInt(event.tags?.find((tag: any) => tag[0] === 'zaps')?.[1] || '0', 10);
   const replies = parseInt(event.tags?.find((tag: any) => tag[0] === 'replies')?.[1] || '0', 10);
   const popularity = likes + reposts + zaps + replies;
+  
+  // Better excerpt handling
+  let excerpt = summary;
+  if (!excerpt && event.content) {
+    // Try to extract a clean excerpt from content
+    const cleanContent = event.content.replace(/^#\s*.*$/gm, '').trim(); // Remove markdown headers
+    excerpt = cleanContent.slice(0, 200);
+    if (excerpt.length === 200) {
+      excerpt += "...";
+    }
+  }
+  
+  // Debug: log what we extracted
+  console.log("Extracted article info:", {
+    title,
+    excerptLength: excerpt?.length || 0,
+    hasImage: !!image,
+    popularity
+  });
+  
   return {
     id: event.id,
     title,
@@ -64,7 +101,7 @@ function extractArticleInfo(event: any) {
     authorName: author?.substring?.(0, 8) || "Unknown",
     timeAgo: date,
     readTime: "1 min",
-    excerpt: summary || event.content.slice(0, 200),
+    excerpt: excerpt || "No preview available",
     thumbnail: image,
     url,
     content: event.content,
@@ -210,7 +247,25 @@ export async function POST(req: NextRequest) {
     const limit = typeof body.limit === 'number' ? body.limit : 5;
     // Fetch all historical articles (no since filter)
     const { data: events } = await getSubData([{ kinds: [30023] }], 5000);
-    let filtered = events;
+    
+    // Filter out invalid or malformed events
+    let validEvents = events.filter((event: any) => {
+      // Must be kind 30023
+      if (event.kind !== 30023) return false;
+      // Must have content
+      if (!event.content || event.content.trim().length === 0) return false;
+      // Must have an ID
+      if (!event.id) return false;
+      // Must have a pubkey
+      if (!event.pubkey) return false;
+      // Content must be at least 50 characters (filter out very short posts)
+      if (event.content.trim().length < 50) return false;
+      return true;
+    });
+    
+    console.log(`Found ${events.length} total events, ${validEvents.length} valid NIP-23 articles`);
+    
+    let filtered = validEvents;
     let usedKeywords: string[] = [];
     let usedCategory: string | undefined;
     let usedRecency: string | undefined;
@@ -258,6 +313,28 @@ export async function POST(req: NextRequest) {
         // Fallback: recency
         return (b.timeAgo > a.timeAgo ? 1 : -1);
       });
+    
+    // Additional quality filtering after metadata extraction
+    articles = articles.filter(article => {
+      // Filter out articles with "Untitled" or very generic titles
+      if (article.title === "Untitled" || 
+          article.title.toLowerCase().includes("untitled") ||
+          article.title.length < 3) {
+        return false;
+      }
+      // Filter out articles with very short excerpts
+      if (!article.excerpt || article.excerpt.length < 20) {
+        return false;
+      }
+      // Filter out articles that look like JSON or malformed content
+      if (article.excerpt.includes('{"title"') || 
+          article.excerpt.includes('"content"') ||
+          article.excerpt.includes('"tags"')) {
+        return false;
+      }
+      return true;
+    });
+    
     // Deduplicate by id before slicing for pagination
     const seenIds = new Set();
     articles = articles.filter(article => {
@@ -269,8 +346,25 @@ export async function POST(req: NextRequest) {
     articles = articles.slice(offset, offset + limit);
     if (articles.length === 0) {
       // If the query includes 'trending', 'popular', or 'discussions', return most popular/recent
-      articles = events
+      articles = validEvents
         .map(extractArticleInfo)
+        .filter(article => {
+          // Apply the same quality filters to fallback articles
+          if (article.title === "Untitled" || 
+              article.title.toLowerCase().includes("untitled") ||
+              article.title.length < 3) {
+            return false;
+          }
+          if (!article.excerpt || article.excerpt.length < 20) {
+            return false;
+          }
+          if (article.excerpt.includes('{"title"') || 
+              article.excerpt.includes('"content"') ||
+              article.excerpt.includes('"tags"')) {
+            return false;
+          }
+          return true;
+        })
         .sort((a, b) => {
           if ((b.stats?.popularity || 0) !== (a.stats?.popularity || 0)) {
             return (b.stats?.popularity || 0) - (a.stats?.popularity || 0);
