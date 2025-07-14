@@ -7,11 +7,13 @@ import { Input } from "@/components/ui/input"
 import { MessageBubble } from "@/components/message-bubble"
 import { SuggestedPrompts } from "@/components/suggested-prompts"
 import { ArticleCard } from "@/components/article-card"
-import { useChatHistory } from "@/hooks/use-chat-history"
+import { useSavedSummaries } from "@/hooks/use-chat-history"
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import SWHandler from "smart-widget-handler";
 import { toast } from "./ui/use-toast";
+import { Badge } from "@/components/ui/badge";
+import { nip19 } from "nostr-tools";
 
 interface Message {
   id: string
@@ -34,15 +36,31 @@ interface Message {
 }
 
 export function ChatInterface() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      type: "ai",
-      content:
-        "Hello! I'm Yakisum, your AI assistant for discovering and summarizing articles from Yakihonne. How can I help you today?",
-      timestamp: new Date(),
-    },
-  ])
+  // Load messages from localStorage if available
+  const [messages, setMessages] = useState<Message[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('yakisum_chat_messages');
+      if (saved) {
+        try {
+          // Ensure all timestamps are strings
+          const parsed = JSON.parse(saved).map((msg: any) => ({
+            ...msg,
+            timestamp: typeof msg.timestamp === 'string' ? msg.timestamp : new Date(msg.timestamp).toISOString(),
+          }));
+          return parsed;
+        } catch {}
+      }
+    }
+    return [
+      {
+        id: "1",
+        type: "ai",
+        content:
+          "Hello! I'm Yakisum, your AI assistant for discovering and summarizing articles from the Yakihonne platform. How can I help you today?",
+        timestamp: "", // Use empty string for SSR
+      },
+    ];
+  });
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [currentChatId, setCurrentChatId] = useState<string | null>(null)
@@ -52,11 +70,13 @@ export function ChatInterface() {
   const [lastArticles, setLastArticles] = useState<any[]>([])
   const [lastLimit, setLastLimit] = useState<number>(5)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const { addToHistory, saveChat, isChatSaved } = useChatHistory()
+  const { savedSummaries, saveSummary, unsaveSummary, isSummarySaved } = useSavedSummaries();
   const [repostModalOpen, setRepostModalOpen] = useState(false);
   const [repostMessage, setRepostMessage] = useState<Message | null>(null);
   const [repostContent, setRepostContent] = useState("");
   const [repostTags, setRepostTags] = useState("");
+  // Track summarized article IDs to prevent double summaries
+  const [summarizedArticleIds, setSummarizedArticleIds] = useState<Set<string>>(new Set());
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -66,13 +86,20 @@ export function ChatInterface() {
     scrollToBottom()
   }, [messages])
 
+  // On mount, if the first message has an empty timestamp, set it to now (client only)
+  useEffect(() => {
+    if (messages.length === 1 && messages[0].timestamp === "") {
+      setMessages([{ ...messages[0], timestamp: new Date().toISOString() }]);
+    }
+  }, []);
+
   useEffect(() => {
     const listener = SWHandler.client.listen((data: any) => {
       // Success: raw nostr event (kind, id, sig)
       if (data.kind === 'nostr-event' && data.id && data.sig) {
         toast({
           title: 'Repost published!',
-          description: 'Your summary was successfully posted to Yakisum.',
+          description: 'Your summary was successfully posted to Yakihonne.',
           variant: 'default',
         });
       }
@@ -80,13 +107,27 @@ export function ChatInterface() {
       else if (data.kind === 'nostr-event' && data.data?.status === 'error') {
         toast({
           title: 'Repost failed',
-          description: data.data?.error || 'There was an error publishing your summary.',
+          description: data.data?.error || 'There was an error publishing your summary to Yakihonne.',
           variant: 'destructive',
         });
       }
     });
     return () => listener.close && listener.close();
   }, []);
+
+  // Persist messages to localStorage on every change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('yakisum_chat_messages', JSON.stringify(messages));
+    }
+  }, [messages]);
+
+  // Reset summarizedArticleIds when a new summary is added
+  useEffect(() => {
+    if (messages.length > 0) {
+      setSummarizedArticleIds(new Set());
+    }
+  }, [messages.length]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
@@ -110,12 +151,7 @@ export function ChatInterface() {
 
     // Add to history immediately with just the user message
     if (chatId) {
-      addToHistory({
-        id: chatId,
-        title: input.slice(0, 50) + (input.length > 50 ? "..." : ""),
-        messages: updatedMessagesWithUser,
-        timestamp: new Date().toISOString(),
-      })
+      // This part of history saving is removed as per the edit hint
     }
 
     setInput("")
@@ -144,6 +180,11 @@ export function ChatInterface() {
       setLastArticles(data.body?.articles || [])
       setLastLimit(data.body?.limit || 5)
 
+      // If summarizing a specific article, copy its tags
+      let tags: string[] | undefined = undefined;
+      if (data.body?.articles && data.body.articles.length === 1 && Array.isArray(data.body.articles[0].tags)) {
+        tags = data.body.articles[0].tags;
+      }
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: "ai",
@@ -152,19 +193,13 @@ export function ChatInterface() {
         debugContent: data.body?.debugContent || "",
         articles: data.body?.articles || [],
         title: data.body?.title || undefined,
+        ...(tags ? { tags } : {}),
       }
 
       const finalMessages = [...updatedMessagesWithUser, aiMessage]
       setMessages(finalMessages)
 
-      if (chatId) {
-        addToHistory({
-          id: chatId,
-          title: userMessage.content.slice(0, 50) + (userMessage.content.length > 50 ? "..." : ""),
-          messages: finalMessages,
-          timestamp: new Date().toISOString(),
-        })
-      }
+      // This part of history saving is removed as per the edit hint
     } catch (err) {
       setMessages([
         ...updatedMessagesWithUser,
@@ -223,27 +258,29 @@ export function ChatInterface() {
     }
   }
 
+  // This function is no longer needed as chat saving is removed
   const handleSaveChat = () => {
-    if (currentChatId && messages.length > 1) {
-      saveChat({
-        id: currentChatId,
-        title: messages[1]?.content.slice(0, 50) + (messages[1]?.content.length > 50 ? "..." : "") || "Untitled Chat",
-        messages: messages,
-        timestamp: new Date().toISOString(),
-      })
-    }
+    // This part of history saving is removed as per the edit hint
   }
 
   const handleSuggestedPrompt = (prompt: string) => {
     setInput(prompt)
   }
 
-  const isSaved = currentChatId ? isChatSaved(currentChatId) : false
+  // This function is no longer needed as chat saving is removed
+  const isSaved = currentChatId ? false : false; // Placeholder, as chat saving is removed
 
   const handleRepost = (message: Message) => {
     setRepostMessage(message);
     setRepostContent(message.content);
-    setRepostTags("");
+    // Prefill tags from message or repostMessage
+    let tags: string[] = [];
+    if (Array.isArray((message as any).tags)) {
+      tags = (message as any).tags;
+    } else if (repostMessage && Array.isArray((repostMessage as any).tags)) {
+      tags = (repostMessage as any).tags;
+    }
+    setRepostTags(tags.length > 0 ? tags.map((t: string) => `#${t}`).join(", ") : "");
     setRepostModalOpen(true);
   };
 
@@ -290,16 +327,55 @@ export function ChatInterface() {
     setRepostTags("");
   };
 
+  // Clear chat handler
+  const handleClearChat = () => {
+    const initialMessage: Message = {
+      id: "1",
+      type: "ai",
+      content:
+        "Hello! I'm Yakisum, your AI assistant for discovering and summarizing articles from the Yakihonne platform. How can I help you today?",
+      timestamp: new Date().toISOString(),
+    };
+    setMessages([initialMessage]);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('yakisum_chat_messages', JSON.stringify([initialMessage]));
+    }
+    scrollToBottom();
+  };
+
   return (
-    <div className="flex-1 flex flex-col h-full max-h-full">
+    <div className="flex-1 flex flex-col h-full">
+      <div className="flex items-center justify-between px-4 py-2 border-b bg-white/80 dark:bg-black/40 sticky top-0 z-10">
+        <span className="font-semibold text-lg">Yakihonne Chat</span>
+        <Button variant="outline" size="sm" onClick={handleClearChat} title="Clear chat">
+          Clear Chat
+        </Button>
+      </div>
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <div className="max-w-4xl mx-auto space-y-4">
           {messages.map((message) => (
             <div key={message.id}>
-              <MessageBubble 
-                message={message} 
-                onRepost={message.type === 'ai' ? handleRepost : undefined} 
+              <MessageBubble
+                message={message}
+                onRepost={message.type === 'ai' ? handleRepost : undefined}
+                isSaved={message.type === 'ai' && isSummarySaved(message.id)}
+                onSave={message.type === 'ai' ? () => {
+                  saveSummary({
+                    id: message.id,
+                    title: message.title,
+                    content: message.content,
+                    timestamp: message.timestamp,
+                    postId: message.postId,
+                    author: message.author,
+                    originalTitle: message.originalTitle,
+                  });
+                  toast({ title: 'Summary saved!', description: 'You can find it in Saved Summaries.', variant: 'default' });
+                } : undefined}
+                onUnsave={message.type === 'ai' ? () => {
+                  unsaveSummary(message.id);
+                  toast({ title: 'Summary removed', description: 'Removed from Saved Summaries.', variant: 'destructive' });
+                } : undefined}
               />
               {message.debugContent && (
                 <pre className="text-xs text-gray-400 bg-gray-100 p-2 rounded mt-2">
@@ -310,7 +386,7 @@ export function ChatInterface() {
                 <div className="mt-4 space-y-3">
                   <p className="text-sm font-medium text-gray-700">Articles:</p>
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                    {message.articles.map((article) => {
+                    {(message.articles || []).map((article) => {
                       // Patch for legacy shape: fill missing fields for ArticleCard
                       const patched = {
                         ...article,
@@ -319,44 +395,65 @@ export function ChatInterface() {
                         url: (article as any).url || "#",
                         stats: (article as any).stats || { likes: 0, replies: 0, zaps: 0, reposts: 0 },
                       };
-                      // Add click handler for summarization
+                      const isSummarized = summarizedArticleIds.has(patched.id);
                       return (
-                        <div key={patched.id} onClick={async () => {
-                          // Prevent duplicate summaries for the same article
-                          if (messages.some(m => m.type === "ai" && m.content && m.content.includes(patched.title))) return;
-                          setIsLoading(true);
-                          try {
-                            const res = await fetch("/api/summarize", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ articleId: patched.id }),
-                            });
-                            const data = await res.json();
-                            setMessages(prev => ([
-                              ...prev,
-                              {
-                                id: (Date.now() + Math.random()).toString(),
-                                type: "ai",
-                                content: data.body?.summary || "No summary returned.",
-                                timestamp: new Date().toISOString(),
-                                title: data.body?.title || undefined,
-                                postId: data.body?.postId || undefined,
-                              },
-                            ]));
-                          } catch (err) {
-                            setMessages(prev => ([
-                              ...prev,
-                              {
-                                id: (Date.now() + Math.random()).toString(),
-                                type: "ai",
-                                content: "Sorry, there was an error summarizing this article.",
-                                timestamp: new Date().toISOString(),
-                              },
-                            ]));
-                          } finally {
-                            setIsLoading(false);
-                          }
-                        }} style={{ cursor: "pointer" }}>
+                        <div key={patched.id}
+                          onClick={async () => {
+                            if (isSummarized) return;
+                            setSummarizedArticleIds(prev => new Set(prev).add(patched.id));
+                            // Scroll immediately
+                            scrollToBottom();
+                            setIsLoading(true);
+                            // Try to generate naddr if possible
+                            let articleAddr = undefined;
+                            try {
+                              if ((article as any).kind === 30023 && (article as any).pubkey && Array.isArray((article as any).tags)) {
+                                const identifier = (article as any).tags.find((tag: any) => tag[0] === 'd')?.[1];
+                                if (identifier) {
+                                  articleAddr = nip19.naddrEncode({
+                                    kind: 30023,
+                                    pubkey: (article as any).pubkey,
+                                    identifier,
+                                    relays: [],
+                                  });
+                                }
+                              }
+                            } catch {}
+                            try {
+                              const res = await fetch("/api/summarize", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ articleId: patched.id, articleAddr }),
+                              });
+                              const data = await res.json();
+                              setMessages(prev => ([
+                                ...prev.filter(m => typeof m === 'object' && m !== null && 'id' in m),
+                                {
+                                  id: (Date.now() + Math.random()).toString(),
+                                  type: "ai",
+                                  content: data.body?.summary || "No summary returned.",
+                                  timestamp: new Date().toISOString(),
+                                  title: data.body?.title || undefined,
+                                  postId: data.body?.postId || undefined,
+                                  tags: Array.isArray(data.body?.articles?.[0]?.tags) ? data.body.articles[0].tags : undefined,
+                                },
+                              ]));
+                            } catch (err) {
+                              setMessages(prev => ([
+                                ...prev.filter(m => typeof m === 'object' && m !== null && 'id' in m),
+                                {
+                                  id: (Date.now() + Math.random()).toString(),
+                                  type: "ai",
+                                  content: "Sorry, there was an error summarizing this article.",
+                                  timestamp: new Date().toISOString(),
+                                },
+                              ]));
+                            } finally {
+                              setIsLoading(false);
+                            }
+                          }}
+                          style={{ cursor: isSummarized ? "not-allowed" : "pointer", opacity: isSummarized ? 0.5 : 1 }}
+                        >
                           <ArticleCard article={patched} />
                         </div>
                       );
@@ -396,22 +493,7 @@ export function ChatInterface() {
       )}
 
       {/* Save Chat Button */}
-      {messages.length > 1 && (
-        <div className="px-4 pb-2">
-          <div className="max-w-4xl mx-auto">
-            <Button
-              onClick={handleSaveChat}
-              variant="outline"
-              size="sm"
-              className={`w-full sm:w-auto ${isSaved ? "text-red-500 border-red-200" : "text-gray-600"}`}
-              disabled={isSaved}
-            >
-              <Heart className={`h-4 w-4 mr-2 ${isSaved ? "fill-current" : ""}`} />
-              {isSaved ? "Saved to Favorites" : "Save Chat"}
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* This section is removed as chat saving is removed */}
 
       {/* Input */}
       <div className="border-t border-gray-200 p-4">
@@ -439,7 +521,7 @@ export function ChatInterface() {
       <Dialog open={repostModalOpen} onOpenChange={setRepostModalOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Repost Summary to Yakisum</DialogTitle>
+            <DialogTitle>Repost Summary to Yakihonne</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             <Textarea
@@ -454,6 +536,14 @@ export function ChatInterface() {
               className="w-full"
               placeholder="Add tags (comma or space separated)"
             />
+            {/* Show tags as badges if present in repostMessage */}
+            {repostMessage && Array.isArray((repostMessage as any)?.tags) && (repostMessage as any)?.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {(repostMessage as any).tags.map((tag: string) => (
+                  <Badge key={tag} variant="outline" className="text-orange-600 border-orange-200 bg-orange-50">#{tag}</Badge>
+                ))}
+              </div>
+            )}
             {/* Reference to original post, below tags */}
             {repostMessage && (repostMessage.originalTitle || repostMessage.postId || repostMessage.author) && (
               <div className="bg-gray-50 border border-gray-200 rounded p-2 mt-2 text-xs text-gray-600 flex flex-col gap-1">
