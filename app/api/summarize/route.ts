@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSubData } from "@/lib/helpers";
-import natural from "natural";
+import { nip19 } from "nostr-tools";
+import * as sw from "stopword";
+import { franc } from "franc-min";
+// @ts-ignore: No types for 'langs'
+import langs from "langs";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_API_URL = process.env.GEMINI_API_URL;
@@ -15,9 +19,22 @@ async function geminiSummarize(text: string): Promise<string> {
     });
     return "Error: Missing API configuration. Please check your environment variables.";
   }
-  
-  const prompt = `Summarize the following content in 3-5 sentences.\n\n${text}`;
-  console.log("Making request to Gemini:", { url: GEMINI_API_URL, hasKey: !!GEMINI_API_KEY });
+
+  // Detect language using franc-min
+  let langCode = franc(text);
+  let langName = "English";
+  if (langCode && langCode !== 'und') {
+    try {
+      const langObj = langs.where("3", langCode);
+      if (langObj && langObj.name) {
+        langName = langObj.name;
+      }
+    } catch {}
+  }
+
+  const prompt = `Summarize the following content in 3-5 sentences in ${langName} (if the content is not in ${langName}, use the language of the content):\n\n${text}`;
+
+  console.log("Making request to Gemini:", { url: GEMINI_API_URL, hasKey: !!GEMINI_API_KEY, langName });
   const res = await fetch(GEMINI_API_URL, {
     method: "POST",
     headers: {
@@ -32,7 +49,7 @@ async function geminiSummarize(text: string): Promise<string> {
   // console log; res
   console.log("Gemini response status:", res.status, res.statusText);
   console.log("Gemini response headers:", Object.fromEntries(res.headers.entries()));
-  
+
   if (res.ok) {
     const data = await res.json();
     console.log("Gemini response data:", data);
@@ -86,8 +103,40 @@ function extractArticleInfo(event: any) {
   } else {
     timeAgo = createdDate.toLocaleDateString();
   }
-  
-  const url = `https://yakihonne.com/a/${event.id}`;
+
+  // Generate Yakihonne URL using NIP-19 encoding
+  let url = '';
+  try {
+    if (event.kind === 30023) {
+      // Article (NIP-23)
+      const identifier = event.tags?.find((tag: any) => tag[0] === 'd')?.[1] || '';
+      if (identifier) {
+        const naddr = nip19.naddrEncode({
+          kind: 30023,
+          pubkey: event.pubkey,
+          identifier,
+          relays: [],
+        });
+        url = `https://yakihonne.com/article/${naddr}`;
+      } else {
+        // fallback to old style if no identifier
+        url = `https://yakihonne.com/a/${event.id}`;
+      }
+    } else if (event.kind === 1) {
+      // Note
+      const nevent = nip19.neventEncode({
+        id: event.id,
+        relays: [],
+      });
+      url = `https://yakihonne.com/notes/${nevent}`;
+    } else {
+      // fallback for other kinds
+      url = `https://yakihonne.com/a/${event.id}`;
+    }
+  } catch (e) {
+    // fallback if encoding fails
+    url = `https://yakihonne.com/a/${event.id}`;
+  }
   
   // Popularity metrics
   const likes = parseInt(event.tags?.find((tag: any) => tag[0] === 'likes')?.[1] || '0', 10);
@@ -114,16 +163,13 @@ function extractArticleInfo(event: any) {
     }
   }
   
-  // Debug: log what we extracted
-  console.log("Extracted article info:", {
-    title,
-    excerptLength: excerpt?.length || 0,
-    hasImage: !!image,
-    popularity,
-    readTime,
-    timeAgo
-  });
-  
+
+
+  // Extract all ['t', ...] tags as an array of strings
+  const tags = (event.tags || [])
+    .filter((tag: any) => tag[0] === 't' && typeof tag[1] === 'string')
+    .map((tag: any) => tag[1]);
+
   return {
     id: event.id,
     title,
@@ -136,6 +182,7 @@ function extractArticleInfo(event: any) {
     url,
     content: event.content,
     stats: { likes, reposts, zaps, replies, popularity },
+    tags,
   };
 }
 
@@ -324,26 +371,66 @@ export async function POST(req: NextRequest) {
   });
   
   const body = await req.json();
-  const { query, articleId, url } = body;
+  const { query, articleId, articleAddr, url } = body;
 
   // 1. If summarizing a specific article (by articleId or url)
-  if (articleId || url) {
+  if (articleId || articleAddr || url) {
     let content = "";
     let title = "Article";
+    // Decode NIP-19 encoded articleId or articleAddr if needed
+    let rawArticleId = articleId;
+    let naddrData = null;
+    if (articleId && typeof articleId === 'string' && (articleId.startsWith('naddr1') || articleId.startsWith('nevent1'))) {
+      try {
+        const decoded = nip19.decode(articleId);
+        if (decoded.type === 'naddr' && decoded.data && typeof decoded.data === 'object') {
+          naddrData = decoded.data;
+        } else if (decoded.type === 'nevent' && decoded.data && typeof decoded.data === 'object') {
+          rawArticleId = decoded.data.id;
+        }
+      } catch (e) {
+        rawArticleId = articleId;
+      }
+    }
+    if (articleAddr && typeof articleAddr === 'string' && articleAddr.startsWith('naddr1')) {
+      try {
+        const decoded = nip19.decode(articleAddr);
+        if (decoded.type === 'naddr' && decoded.data && typeof decoded.data === 'object') {
+          naddrData = decoded.data;
+        }
+      } catch {}
+    }
     // Try to use search results if available in body.articles
     let found = null;
     if (body.articles && Array.isArray(body.articles)) {
-      found = body.articles.find((a: any) => a.id === articleId || a.url === url);
+      found = body.articles.find((a: any) => a.id === rawArticleId || a.url === url);
+      if (!found && naddrData) {
+        found = body.articles.find((a: any) =>
+          a.kind === naddrData.kind &&
+          a.pubkey === naddrData.pubkey &&
+          Array.isArray(a.tags) && a.tags.find((tag: any) => tag[0] === 'd' && tag[1] === naddrData.identifier)
+        );
+      }
       if (found) {
         content = found.content || found.excerpt || found.title || "";
         title = found.title || title;
       }
     }
     // If not found, fetch from Nostr by ID (kind 30023, historical)
-    if (!found && articleId) {
+    if (!found && (rawArticleId || naddrData)) {
       // Fetch all historical articles (no since filter)
       const { data: events } = await getSubData([{ kinds: [30023] }], 5000);
-      const event = events.find((e: any) => e.id === articleId);
+      let event = null;
+      if (typeof rawArticleId === 'string') {
+        event = events.find((e: any) => e.id === rawArticleId);
+      }
+      if (!event && naddrData) {
+        event = events.find((e: any) =>
+          e.kind === naddrData.kind &&
+          e.pubkey === naddrData.pubkey &&
+          e.tags?.find((tag: any) => tag[0] === 'd' && tag[1] === naddrData.identifier)
+        );
+      }
       if (event) {
         content = event.content;
         title = extractArticleInfo(event).title;
@@ -371,7 +458,7 @@ export async function POST(req: NextRequest) {
       layout: "summary",
       body: {
         title: `Summary for ${title}`,
-        postId: articleId || url || null, // Add postId for faint display
+        postId: articleId || articleAddr || url || null, // Add postId for faint display
         summary,
         debugContent: content,
         debugRequest: body,
@@ -477,11 +564,15 @@ export async function POST(req: NextRequest) {
     
     // Only extract search intent if this is actually a search query
     // REPLACE GEMINI: Always use manual keyword extraction
-    // Use 'natural' for stopword removal
-    const tokenizer = new natural.WordTokenizer();
-    usedKeywords = tokenizer.tokenize(query.toLowerCase());
-    usedKeywords = usedKeywords.filter((word: string) => word.length > 2 && !natural.stopwords.includes(word));
-    console.log("[Natural Stopword Extraction] Query:", query, "=>", usedKeywords);
+    // Use 'stopword' for multi-language stopword removal
+    // Tokenize by splitting on non-word characters, filter stopwords (default: English)
+    usedKeywords = query
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((word: string) => word.length > 2);
+    // Remove stopwords (default: English)
+    usedKeywords = sw.removeStopwords(usedKeywords);
+    console.log("[Stopword Extraction] Query:", query, "=>", usedKeywords);
     
     console.log("Before keyword filtering:", filtered.length, "articles");
     console.log("Query:", query);
