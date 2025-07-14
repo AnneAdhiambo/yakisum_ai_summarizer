@@ -6,7 +6,7 @@ interface ChatMessage {
   id: string
   type: "user" | "ai"
   content: string
-  timestamp: Date
+  timestamp: string | Date
 }
 
 interface ChatSession {

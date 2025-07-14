@@ -1,4 +1,4 @@
-# AI Summarizer - YakiHonne Smart Widget
+# YakisomeAI Summarizer - YakiHonne Smart Widget
 
 A Next.js-based smart widget for YakiHonne that provides AI-powered summarization of Nostr posts and articles using Google's Gemini AI.
 
