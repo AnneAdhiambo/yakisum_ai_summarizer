@@ -2,98 +2,80 @@
 
 import { useState, useEffect } from "react"
 
-interface ChatMessage {
-  id: string
-  type: "user" | "ai"
-  content: string
-  timestamp: string | Date
+// Saved summary type
+export interface SavedSummary {
+  id: string;
+  title?: string;
+  content: string;
+  timestamp: string | Date;
+  postId?: string;
+  author?: string;
+  originalTitle?: string;
 }
 
-interface ChatSession {
-  id: string
-  title: string
-  messages: ChatMessage[]
-  timestamp: string
-}
-
-export function useChatHistory() {
-  const [history, setHistory] = useState<ChatSession[]>([])
-  const [savedChats, setSavedChats] = useState<ChatSession[]>([])
-  const [activeChat, setActiveChat] = useState<ChatSession | null>(null)
+export function useSavedSummaries() {
+  const [savedSummaries, setSavedSummaries] = useState<SavedSummary[]>([]);
 
   // Load from localStorage on mount
   useEffect(() => {
-    const savedHistory = localStorage.getItem("yakihonne_chat_history")
-    const savedFavorites = localStorage.getItem("yakihonne_saved_chats")
-
-    if (savedHistory) {
-      setHistory(JSON.parse(savedHistory))
+    const saved = localStorage.getItem("yakihonne_saved_summaries");
+    if (saved) {
+      setSavedSummaries(JSON.parse(saved));
     }
+  }, []);
 
-    if (savedFavorites) {
-      setSavedChats(JSON.parse(savedFavorites))
-    }
-  }, [])
+  const saveSummary = (summary: SavedSummary) => {
+    setSavedSummaries((prev) => {
+      const updated = [summary, ...prev.filter((s) => s.id !== summary.id)];
+      localStorage.setItem("yakihonne_saved_summaries", JSON.stringify(updated));
+      return updated;
+    });
+  };
 
-  const addToHistory = (chat: ChatSession) => {
+  const unsaveSummary = (summaryId: string) => {
+    setSavedSummaries((prev) => {
+      const updated = prev.filter((s) => s.id !== summaryId);
+      localStorage.setItem("yakihonne_saved_summaries", JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const isSummarySaved = (summaryId: string) => {
+    return savedSummaries.some((s) => s.id === summaryId);
+  };
+
+  return {
+    savedSummaries,
+    saveSummary,
+    unsaveSummary,
+    isSummarySaved,
+  };
+}
+
+// Chat history hook for HistorySection and related features
+export function useChatHistory() {
+  const [history, setHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    const savedHistory = localStorage.getItem("yakihonne_chat_history");
+    if (savedHistory) setHistory(JSON.parse(savedHistory));
+  }, []);
+
+  const addToHistory = (chat: any) => {
     setHistory((prev) => {
-      const updated = [chat, ...prev.filter((c) => c.id !== chat.id)]
-      localStorage.setItem("yakihonne_chat_history", JSON.stringify(updated))
-      return updated
-    })
-  }
-
-  const saveChat = (chat: ChatSession) => {
-    setSavedChats((prev) => {
-      const updated = [chat, ...prev.filter((c) => c.id !== chat.id)]
-      localStorage.setItem("yakihonne_saved_chats", JSON.stringify(updated))
-      return updated
-    })
-  }
-
-  const removeSavedChat = (chatId: string) => {
-    setSavedChats((prev) => {
-      const updated = prev.filter((c) => c.id !== chatId)
-      localStorage.setItem("yakihonne_saved_chats", JSON.stringify(updated))
-      return updated
-    })
-  }
+      const updated = [chat, ...prev.filter((c) => c.id !== chat.id)];
+      localStorage.setItem("yakihonne_chat_history", JSON.stringify(updated));
+      return updated;
+    });
+  };
 
   const removeFromHistory = (chatId: string) => {
     setHistory((prev) => {
-      const updated = prev.filter((c) => c.id !== chatId)
-      localStorage.setItem("yakihonne_chat_history", JSON.stringify(updated))
-      return updated
-    })
-  }
+      const updated = prev.filter((c) => c.id !== chatId);
+      localStorage.setItem("yakihonne_chat_history", JSON.stringify(updated));
+      return updated;
+    });
+  };
 
-  const isChatSaved = (chatId: string) => {
-    return savedChats.some((chat) => chat.id === chatId)
-  }
-
-  const loadChat = (chatId: string) => {
-    const chat = history.find((c) => c.id === chatId) || savedChats.find((c) => c.id === chatId)
-    if (chat) {
-      setActiveChat(chat)
-      return chat
-    }
-    return null
-  }
-
-  const clearActiveChat = () => {
-    setActiveChat(null)
-  }
-
-  return {
-    history,
-    savedChats,
-    activeChat,
-    addToHistory,
-    saveChat,
-    removeSavedChat,
-    removeFromHistory,
-    isChatSaved,
-    loadChat,
-    clearActiveChat,
-  }
+  return { history, addToHistory, removeFromHistory };
 }
