@@ -57,7 +57,7 @@ export function sortEvents(events: Event[]): Event[] {
 }
 
 // Fetch events from Nostr/NDK (reference logic)
-export async function getSubData(filter: NDKFilter[], timeout = 1000): Promise<{ data: Event[]; pubkeys: Pubkey[] }> {
+export async function getSubData(filter: NDKFilter[], timeout = 1000, useCache = false): Promise<{ data: Event[]; pubkeys: Pubkey[] }> {
   if (!filter || filter.length === 0) return { data: [], pubkeys: [] };
 
   return new Promise((resolve) => {
@@ -74,7 +74,7 @@ export async function getSubData(filter: NDKFilter[], timeout = 1000): Promise<{
     });
 
     let sub = ndkInstance.subscribe(filter_, {
-      cacheUsage: NDKSubscriptionCacheUsage.CACHE_FIRST,
+      cacheUsage: useCache ? NDKSubscriptionCacheUsage.CACHE_FIRST : NDKSubscriptionCacheUsage.ONLY_RELAY,
       groupable: false,
       skipVerification: true,
       skipValidation: true,

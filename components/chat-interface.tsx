@@ -8,12 +8,16 @@ import { MessageBubble } from "@/components/message-bubble"
 import { SuggestedPrompts } from "@/components/suggested-prompts"
 import { ArticleCard } from "@/components/article-card"
 import { useChatHistory } from "@/hooks/use-chat-history"
+import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import SWHandler from "smart-widget-handler";
+import { toast } from "./ui/use-toast";
 
 interface Message {
   id: string
   type: "user" | "ai"
   content: string
-  timestamp: Date
+  timestamp: string | Date
   articles?: Array<{
     id: string
     title: string
@@ -24,6 +28,9 @@ interface Message {
   }>
   debugContent?: string // Added for debugging
   title?: string // Added for AI messages
+  postId?: string
+  author?: string
+  originalTitle?: string // Added for reposting
 }
 
 export function ChatInterface() {
@@ -32,7 +39,7 @@ export function ChatInterface() {
       id: "1",
       type: "ai",
       content:
-        "Hello! I'm your Yakihonne AI Agent. How can I assist you today?",
+        "Hello! I'm Yakisum, your AI assistant for discovering and summarizing articles from Yakihonne. How can I help you today?",
       timestamp: new Date(),
     },
   ])
@@ -46,6 +53,10 @@ export function ChatInterface() {
   const [lastLimit, setLastLimit] = useState<number>(5)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { addToHistory, saveChat, isChatSaved } = useChatHistory()
+  const [repostModalOpen, setRepostModalOpen] = useState(false);
+  const [repostMessage, setRepostMessage] = useState<Message | null>(null);
+  const [repostContent, setRepostContent] = useState("");
+  const [repostTags, setRepostTags] = useState("");
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -55,6 +66,28 @@ export function ChatInterface() {
     scrollToBottom()
   }, [messages])
 
+  useEffect(() => {
+    const listener = SWHandler.client.listen((data: any) => {
+      // Success: raw nostr event (kind, id, sig)
+      if (data.kind === 'nostr-event' && data.id && data.sig) {
+        toast({
+          title: 'Repost published!',
+          description: 'Your summary was successfully posted to Yakisum.',
+          variant: 'default',
+        });
+      }
+      // Error: wrapper with status
+      else if (data.kind === 'nostr-event' && data.data?.status === 'error') {
+        toast({
+          title: 'Repost failed',
+          description: data.data?.error || 'There was an error publishing your summary.',
+          variant: 'destructive',
+        });
+      }
+    });
+    return () => listener.close && listener.close();
+  }, []);
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
 
@@ -62,7 +95,7 @@ export function ChatInterface() {
       id: Date.now().toString(),
       type: "user",
       content: input,
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     }
 
     // Create chat session immediately when user sends first message
@@ -91,10 +124,19 @@ export function ChatInterface() {
     try {
       const res = await fetch("/api/summarize", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: input, offset: 0, limit: lastLimit }),
+        headers: { 
+          "Content-Type": "application/json",
+          "Cache-Control": "no-cache", // Prevent caching
+        },
+        body: JSON.stringify({ 
+          query: input, 
+          offset: 0, 
+          limit: 5, // Always start with limit 5 for new searches
+          timestamp: Date.now(), // Add timestamp to prevent caching
+        }),
       })
       const data = await res.json()
+      console.log('Yakihonne API response:', data.body.articles); // <-- Add this log
 
       setLastQuery(input)
       setLastOffset(data.body?.articles?.length || 0)
@@ -106,7 +148,7 @@ export function ChatInterface() {
         id: (Date.now() + 1).toString(),
         type: "ai",
         content: data.body?.summary || "No summary returned.",
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
         debugContent: data.body?.debugContent || "",
         articles: data.body?.articles || [],
         title: data.body?.title || undefined,
@@ -130,7 +172,7 @@ export function ChatInterface() {
           id: (Date.now() + 1).toString(),
           type: "ai",
           content: "Sorry, there was an error summarizing your request.",
-          timestamp: new Date(),
+          timestamp: new Date().toISOString(),
         },
       ])
     } finally {
@@ -198,6 +240,56 @@ export function ChatInterface() {
 
   const isSaved = currentChatId ? isChatSaved(currentChatId) : false
 
+  const handleRepost = (message: Message) => {
+    setRepostMessage(message);
+    setRepostContent(message.content);
+    setRepostTags("");
+    setRepostModalOpen(true);
+  };
+
+  const handleRepostCancel = () => {
+    setRepostModalOpen(false);
+    setRepostMessage(null);
+    setRepostContent("");
+    setRepostTags("");
+  };
+
+  const handleRepostConfirm = () => {
+    if (!repostContent.trim()) {
+      toast({ title: "Cannot repost empty summary", variant: "destructive" });
+      return;
+    }
+    // Parse tags (comma or space separated, remove #, trim)
+    const tags = repostTags
+      .split(/[,\s]+/)
+      .map(t => t.replace(/^#/, '').trim())
+      .filter(Boolean)
+      .map(t => ['t', t]);
+    // Optionally add a title tag if available
+    if (repostMessage?.title) {
+      tags.push(['title', repostMessage.title]);
+    }
+    // Build Nostr event draft
+    const eventDraft = {
+      content: repostContent,
+      tags,
+      kind: 1, // Kind 1 = note/post
+    };
+    try {
+      SWHandler.client.requestEventPublish(
+        eventDraft,
+        window.location.ancestorOrigins?.[0] || '*'
+      );
+      toast({ title: "Repost requested!", description: "Check your Yakisum parent app for confirmation." });
+    } catch (err) {
+      toast({ title: "Failed to repost", description: String(err), variant: "destructive" });
+    }
+    setRepostModalOpen(false);
+    setRepostMessage(null);
+    setRepostContent("");
+    setRepostTags("");
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full max-h-full">
       {/* Messages */}
@@ -205,13 +297,16 @@ export function ChatInterface() {
         <div className="max-w-4xl mx-auto space-y-4">
           {messages.map((message) => (
             <div key={message.id}>
-              <MessageBubble message={message} />
+              <MessageBubble 
+                message={message} 
+                onRepost={message.type === 'ai' ? handleRepost : undefined} 
+              />
               {message.debugContent && (
                 <pre className="text-xs text-gray-400 bg-gray-100 p-2 rounded mt-2">
                   {message.debugContent}
                 </pre>
               )}
-              {message.articles && (
+              {message.articles && message.articles.length > 0 && (
                 <div className="mt-4 space-y-3">
                   <p className="text-sm font-medium text-gray-700">Articles:</p>
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -243,7 +338,7 @@ export function ChatInterface() {
                                 id: (Date.now() + Math.random()).toString(),
                                 type: "ai",
                                 content: data.body?.summary || "No summary returned.",
-                                timestamp: new Date(),
+                                timestamp: new Date().toISOString(),
                                 title: data.body?.title || undefined,
                                 postId: data.body?.postId || undefined,
                               },
@@ -255,7 +350,7 @@ export function ChatInterface() {
                                 id: (Date.now() + Math.random()).toString(),
                                 type: "ai",
                                 content: "Sorry, there was an error summarizing this article.",
-                                timestamp: new Date(),
+                                timestamp: new Date().toISOString(),
                               },
                             ]));
                           } finally {
@@ -339,6 +434,61 @@ export function ChatInterface() {
           </div>
         </div>
       </div>
+
+      {/* Repost Modal */}
+      <Dialog open={repostModalOpen} onOpenChange={setRepostModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Repost Summary to Yakisum</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Textarea
+              value={repostContent}
+              onChange={e => setRepostContent(e.target.value)}
+              className="w-full min-h-[100px]"
+              placeholder="Edit your summary before reposting..."
+            />
+            <Input
+              value={repostTags}
+              onChange={e => setRepostTags(e.target.value)}
+              className="w-full"
+              placeholder="Add tags (comma or space separated)"
+            />
+            {/* Reference to original post, below tags */}
+            {repostMessage && (repostMessage.originalTitle || repostMessage.postId || repostMessage.author) && (
+              <div className="bg-gray-50 border border-gray-200 rounded p-2 mt-2 text-xs text-gray-600 flex flex-col gap-1">
+                <div className="font-semibold text-gray-800">Original Reference</div>
+                {repostMessage.originalTitle && (
+                  <div><span className="font-medium">Title:</span> {repostMessage.originalTitle}</div>
+                )}
+                {repostMessage.postId && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">Post ID:</span>
+                    <span className="font-mono break-all">
+                      {repostMessage.postId.slice(0, 8)}...{repostMessage.postId.slice(-6)}
+                    </span>
+                    <button
+                      className="ml-1 px-1 py-0.5 rounded bg-gray-200 hover:bg-gray-300 text-xs font-mono"
+                      title="Copy Post ID"
+                      type="button"
+                      onClick={() => navigator.clipboard.writeText(repostMessage.postId || "")}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                )}
+                {repostMessage.author && (
+                  <div><span className="font-medium">Author:</span> <span className="font-mono">{repostMessage.author}</span></div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleRepostCancel}>Cancel</Button>
+            <Button onClick={handleRepostConfirm} className="bg-orange-500 hover:bg-orange-600 text-white">Repost</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

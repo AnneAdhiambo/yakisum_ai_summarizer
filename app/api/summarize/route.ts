@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSubData } from "@/lib/helpers";
+import natural from "natural";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_API_URL = process.env.GEMINI_API_URL;
@@ -65,7 +66,27 @@ function extractArticleInfo(event: any) {
                 "/placeholder.svg";
   
   const author = event.pubkey;
-  const date = new Date((event.created_at || 0) * 1000).toISOString().split('T')[0];
+  const createdDate = new Date((event.created_at || 0) * 1000);
+  const now = new Date();
+  const timeDiff = now.getTime() - createdDate.getTime();
+  
+  // Calculate relative time
+  let timeAgo = "recently";
+  if (timeDiff < 60000) { // less than 1 minute
+    timeAgo = "just now";
+  } else if (timeDiff < 3600000) { // less than 1 hour
+    const minutes = Math.floor(timeDiff / 60000);
+    timeAgo = `${minutes}m ago`;
+  } else if (timeDiff < 86400000) { // less than 1 day
+    const hours = Math.floor(timeDiff / 3600000);
+    timeAgo = `${hours}h ago`;
+  } else if (timeDiff < 2592000000) { // less than 30 days
+    const days = Math.floor(timeDiff / 86400000);
+    timeAgo = `${days}d ago`;
+  } else {
+    timeAgo = createdDate.toLocaleDateString();
+  }
+  
   const url = `https://yakihonne.com/a/${event.id}`;
   
   // Popularity metrics
@@ -74,6 +95,13 @@ function extractArticleInfo(event: any) {
   const zaps = parseInt(event.tags?.find((tag: any) => tag[0] === 'zaps')?.[1] || '0', 10);
   const replies = parseInt(event.tags?.find((tag: any) => tag[0] === 'replies')?.[1] || '0', 10);
   const popularity = likes + reposts + zaps + replies;
+  
+  // Calculate read time based on content length
+  const contentLength = event.content?.length || 0;
+  const wordsPerMinute = 200; // Average reading speed
+  const wordCount = contentLength / 5; // Rough estimate: 5 characters per word
+  const readTimeMinutes = Math.max(1, Math.ceil(wordCount / wordsPerMinute));
+  const readTime = `${readTimeMinutes} min read`;
   
   // Better excerpt handling
   let excerpt = summary;
@@ -91,7 +119,9 @@ function extractArticleInfo(event: any) {
     title,
     excerptLength: excerpt?.length || 0,
     hasImage: !!image,
-    popularity
+    popularity,
+    readTime,
+    timeAgo
   });
   
   return {
@@ -99,8 +129,8 @@ function extractArticleInfo(event: any) {
     title,
     author,
     authorName: author?.substring?.(0, 8) || "Unknown",
-    timeAgo: date,
-    readTime: "1 min",
+    timeAgo,
+    readTime,
     excerpt: excerpt || "No preview available",
     thumbnail: image,
     url,
@@ -132,6 +162,116 @@ async function geminiExtractKeywords(query: string): Promise<string[]> {
     return text.split(/,|\n/).map((k: string) => k.trim()).filter(Boolean);
   }
   return [];
+}
+
+// Helper: Classify user intent
+async function classifyUserIntent(query: string): Promise<{
+  intent: 'greeting' | 'question' | 'search' | 'help' | 'unknown';
+  response?: string;
+  shouldSearch?: boolean;
+}> {
+  console.log("Classifying intent for query:", query);
+  
+  if (!GEMINI_API_KEY || !GEMINI_API_URL) {
+    // Fallback classification without Gemini
+    const lowerQuery = query.toLowerCase().trim();
+    console.log("Using fallback classification, lowerQuery:", lowerQuery);
+    
+    // Greetings
+    if (['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings'].some(greeting => 
+      lowerQuery.includes(greeting))) {
+      console.log("Classified as greeting");
+      return {
+        intent: 'greeting',
+        response: "Hello! I'm Yakisum, your AI assistant for discovering and summarizing articles from Yakihonne. How can I help you today?",
+        shouldSearch: false
+      };
+    }
+    
+    // Help requests
+    if (['help', 'what can you do', 'how does this work', 'instructions', 'guide'].some(help => 
+      lowerQuery.includes(help))) {
+      return {
+        intent: 'help',
+        response: "I can help you find and summarize articles from Yakihonne! Here's what I can do:\n\n• Search for articles by topic, keywords, or questions\n• Summarize specific articles you're interested in\n• Show trending and popular content\n• Answer questions about articles\n\nJust ask me anything like 'Find articles about blockchain' or 'Summarize this article'!",
+        shouldSearch: false
+      };
+    }
+    
+    // Questions (not search queries)
+    if (['what is', 'how does', 'can you explain', 'tell me about', 'who is'].some(q => 
+      lowerQuery.includes(q)) && !lowerQuery.includes('article') && !lowerQuery.includes('find')) {
+      return {
+        intent: 'question',
+        response: "I'd be happy to help answer your question! However, I'm specifically designed to help you discover and summarize articles from Yakihonne. Could you try asking me to find articles about your topic instead? For example: 'Find articles about [your topic]' or 'Search for [your topic]'",
+        shouldSearch: false
+      };
+    }
+    
+    // Default to search
+    return {
+      intent: 'search',
+      shouldSearch: true
+    };
+  }
+
+  // Use Gemini for more sophisticated intent classification
+  const prompt = `Classify the user's intent and provide an appropriate response. The user is interacting with Yakisum, an AI assistant for discovering and summarizing articles from the Nostr network.
+
+User query: "${query}"
+
+Classify the intent as one of:
+- "greeting" - if it's a hello, hi, hey, or general greeting
+- "help" - if asking for help, instructions, or what the assistant can do
+- "question" - if asking a general question that's not about finding articles
+- "search" - if looking for articles, content, or information to search for
+
+Return as JSON:
+{
+  "intent": "greeting|help|question|search",
+  "response": "appropriate response message if intent is greeting, help, or question",
+  "shouldSearch": true/false
+}
+
+For greetings, be friendly and explain what Yakisum can do.
+For help requests, explain the capabilities clearly.
+For questions, politely redirect to article search.
+For search, don't include a response.`;
+
+  const res = await fetch(GEMINI_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-goog-api-key": GEMINI_API_KEY,
+    },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+    }),
+  });
+  
+  if (res.ok) {
+    const data = await res.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    try {
+      const parsed = JSON.parse(text);
+      return {
+        intent: parsed.intent || 'search',
+        response: parsed.response,
+        shouldSearch: parsed.shouldSearch !== false
+      };
+    } catch {
+      // Fallback to simple classification
+      return {
+        intent: 'search',
+        shouldSearch: true
+      };
+    }
+  }
+  
+  return {
+    intent: 'search',
+    shouldSearch: true
+  };
 }
 
 // Helper: Use Gemini to extract search intent (keywords, category, recency)
@@ -240,13 +380,78 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // 2. Search flow: return articles, no summaries
+  // 2. Handle conversational queries and search
   if (query) {
+    // First, classify the user's intent
+    const intent = await classifyUserIntent(query);
+    
+    console.log("Intent classification result:", {
+      query,
+      intent: intent.intent,
+      shouldSearch: intent.shouldSearch,
+      response: intent.response
+    });
+    
+    // If it's a greeting, help request, or general question, return conversational response
+    if (intent.intent === 'greeting' || intent.intent === 'help' || intent.intent === 'question') {
+      console.log("Returning conversational response for:", intent.intent);
+      return NextResponse.json({
+        type: "widget",
+        layout: "summary",
+        body: {
+          title: "Yakisum Assistant",
+          summary: intent.response || "Hello! How can I help you discover articles?",
+          articles: [],
+        },
+      });
+    }
+    
+    // If it's not a search query, return a helpful response
+    if (!intent.shouldSearch) {
+      console.log("Returning non-search response");
+      return NextResponse.json({
+        type: "widget",
+        layout: "summary",
+        body: {
+          title: "Yakisum Assistant",
+          summary: intent.response || "I'm here to help you find and summarize articles from Yakihonne. Try asking me to search for articles about a specific topic!",
+          articles: [],
+        },
+      });
+    }
+    
+    console.log("Proceeding with article search for query:", query);
+    
+    // TEMPORARY: For debugging, let's add a simple test
+    if (query.toLowerCase().includes('hello') || query.toLowerCase().includes('hi')) {
+      console.log("DEBUG: Detected hello/hi, returning greeting response");
+      return NextResponse.json({
+        type: "widget",
+        layout: "summary",
+        body: {
+          title: "Yakisum Assistant",
+          summary: "Hello! I'm Yakisum, your AI assistant for discovering and summarizing articles from Yakihonne. How can I help you today?",
+          articles: [],
+        },
+      });
+    }
+    
     // Support offset and limit for pagination
     const offset = typeof body.offset === 'number' ? body.offset : 0;
     const limit = typeof body.limit === 'number' ? body.limit : 5;
+    
+    // Use cache for "Show more" (offset > 0), fresh data for new searches
+    const useCache = offset > 0;
+    console.log("Using cache:", useCache, "for offset:", offset);
+    
     // Fetch all historical articles (no since filter)
-    const { data: events } = await getSubData([{ kinds: [30023] }], 5000);
+    const { data: events } = await getSubData([{ kinds: [30023] }], 5000, useCache);
+    
+    // Deep debug: Log first 3 raw events
+    console.log("Raw events from relay (first 3):", events.slice(0, 3));
+    events.slice(0, 3).forEach((event, idx) => {
+      console.log(`Event #${idx} tags:`, event.tags);
+    });
     
     // Filter out invalid or malformed events
     let validEvents = events.filter((event: any) => {
@@ -269,28 +474,65 @@ export async function POST(req: NextRequest) {
     let usedKeywords: string[] = [];
     let usedCategory: string | undefined;
     let usedRecency: string | undefined;
-    // Use Gemini to extract search intent
-    try {
-      const intent = await geminiExtractSearchIntent(query);
-      usedKeywords = intent.keywords;
-      usedCategory = intent.category;
-      usedRecency = intent.recency;
-    } catch (e) {
-      usedKeywords = [];
-    }
+    
+    // Only extract search intent if this is actually a search query
+    // REPLACE GEMINI: Always use manual keyword extraction
+    // Use 'natural' for stopword removal
+    const tokenizer = new natural.WordTokenizer();
+    usedKeywords = tokenizer.tokenize(query.toLowerCase());
+    usedKeywords = usedKeywords.filter((word: string) => word.length > 2 && !natural.stopwords.includes(word));
+    console.log("[Natural Stopword Extraction] Query:", query, "=>", usedKeywords);
+    
+    console.log("Before keyword filtering:", filtered.length, "articles");
+    console.log("Query:", query);
+    console.log("Used keywords:", usedKeywords);
+    
     // Filter by keywords
     if (usedKeywords.length > 0) {
       const qwords = usedKeywords.map((k) => k.toLowerCase());
+      console.log("Filtering with keywords:", qwords);
       filtered = filtered.filter((e: any) => {
         const title = e.tags?.find((tag: any) => tag[0] === 'title')?.[1] || "";
         const summary = e.tags?.find((tag: any) => tag[0] === 'summary')?.[1] || "";
         const content = e.content || "";
-        return qwords.some((kw) =>
+        const matches = qwords.some((kw) =>
           title.toLowerCase().includes(kw) ||
           summary.toLowerCase().includes(kw) ||
           content.toLowerCase().includes(kw)
         );
+        if (matches) {
+          console.log("Article matches:", title);
+        }
+        return matches;
       });
+      console.log("After keyword filtering:", filtered.length, "articles");
+    } else {
+      console.log("No keywords extracted, trying simple keyword extraction");
+      // Simple keyword extraction as fallback
+      const simpleKeywords = query.toLowerCase()
+        .split(/\s+/)
+        .filter((word: string) => word.length > 2 && !['the', 'and', 'or', 'for', 'with', 'about', 'find', 'articles', 'show', 'me'].includes(word));
+      
+      if (simpleKeywords.length > 0) {
+        console.log("Using simple keywords:", simpleKeywords);
+        filtered = filtered.filter((e: any) => {
+          const title = e.tags?.find((tag: any) => tag[0] === 'title')?.[1] || "";
+          const summary = e.tags?.find((tag: any) => tag[0] === 'summary')?.[1] || "";
+          const content = e.content || "";
+          const matches = simpleKeywords.some((kw: string) =>
+            title.toLowerCase().includes(kw) ||
+            summary.toLowerCase().includes(kw) ||
+            content.toLowerCase().includes(kw)
+          );
+          if (matches) {
+            console.log("Article matches (simple):", title);
+          }
+          return matches;
+        });
+        console.log("After simple keyword filtering:", filtered.length, "articles");
+      } else {
+        console.log("No simple keywords found either");
+      }
     }
     // Filter by category if present
     if (usedCategory) {
@@ -316,23 +558,42 @@ export async function POST(req: NextRequest) {
     
     // Additional quality filtering after metadata extraction
     articles = articles.filter(article => {
-      // Filter out articles with "Untitled" or very generic titles
-      if (article.title === "Untitled" || 
-          article.title.toLowerCase().includes("untitled") ||
-          article.title.length < 3) {
-        return false;
-      }
-      // Filter out articles with very short excerpts
-      if (!article.excerpt || article.excerpt.length < 20) {
-        return false;
-      }
+      // Filter out articles with titles that look like random IDs
+      if (/^[a-z0-9]{10,}$/.test(article.title)) return false;
+      // Filter out articles with JSON as excerpt/content
+      if ((article.excerpt && article.excerpt.trim().startsWith('{') && article.excerpt.trim().endsWith('}')) ||
+          (article.content && article.content.trim().startsWith('{') && article.content.trim().endsWith('}'))) return false;
+      // Filter out articles with very short or generic titles
+      if (!article.title || article.title.length < 5) return false;
+      // Filter out articles with excerpts that are too short
+      if (!article.excerpt || article.excerpt.length < 20) return false;
       // Filter out articles that look like JSON or malformed content
-      if (article.excerpt.includes('{"title"') || 
+      if (article.excerpt.includes('"title"') || 
           article.excerpt.includes('"content"') ||
           article.excerpt.includes('"tags"')) {
         return false;
       }
       return true;
+    });
+
+    // Improve excerpt extraction: if excerpt is JSON, try to extract a summary or fallback to clean text
+    articles = articles.map(article => {
+      let excerpt = article.excerpt;
+      if (excerpt && excerpt.trim().startsWith('{') && excerpt.trim().endsWith('}')) {
+        try {
+          const json = JSON.parse(excerpt);
+          excerpt = json.summary || json.description || json.content || Object.values(json)[0] || '';
+        } catch {
+          excerpt = '';
+        }
+      }
+      // Fallback to clean text if still not valid
+      if (!excerpt && article.content) {
+        const cleanContent = article.content.replace(/^#\s*.*$/gm, '').trim();
+        excerpt = cleanContent.slice(0, 200);
+        if (excerpt.length === 200) excerpt += '...';
+      }
+      return { ...article, excerpt };
     });
     
     // Deduplicate by id before slicing for pagination
@@ -344,7 +605,10 @@ export async function POST(req: NextRequest) {
     });
     const total = articles.length;
     articles = articles.slice(offset, offset + limit);
+    console.log("Final articles after filtering and slicing:", articles.length);
+    
     if (articles.length === 0) {
+      console.log("Fallback triggered. Returning these articles (titles):", validEvents.slice(0, limit).map(e => e.tags?.find((tag: any) => tag[0] === 'title')?.[1] || e.id));
       // If the query includes 'trending', 'popular', or 'discussions', return most popular/recent
       articles = validEvents
         .map(extractArticleInfo)
