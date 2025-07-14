@@ -13,8 +13,8 @@ interface HeaderProps {
 
 const sectionTitles = {
   "ai-agent": "Yakisum",
-  saved: "Saved Chats",
-  history: "Chat History",
+  saved: "Saved Summaries",
+  history: "History",
 }
 
 export function Header({ onMenuClick, activeSection }: HeaderProps) {
